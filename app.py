@@ -1,32 +1,33 @@
-﻿from fastapi import FastAPI, File, UploadFile
+﻿import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from tensorflow.keras.models import load_model
 from PIL import Image
 import numpy as np
 import io
-import os
+import cv2
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-MODEL_PATH = os.path.join("model", "emotion_model.h5")
-model = load_model(MODEL_PATH)
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, "model", "emotion_model.h5")
+CASCADE_PATH = os.path.join(BASE_DIR, "haarcascade_frontalface_default.xml")
+
+model = load_model(MODEL_PATH, compile=False)
+face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 
 emotions = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
-
-
-def preprocess_image(image_bytes: bytes) -> np.ndarray:
-    image = Image.open(io.BytesIO(image_bytes)).convert("L").resize((48, 48))
-    image_array = np.asarray(image, dtype=np.float32) / 255.0
-    image_array = image_array.reshape(1, 48, 48, 1)
-    return image_array
 
 
 @app.get("/")
@@ -37,12 +38,44 @@ def root():
 @app.post("/predict")
 async def predict(image: UploadFile = File(...)):
     contents = await image.read()
-    input_tensor = preprocess_image(contents)
-    predictions = model.predict(input_tensor)
+
+    pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
+    frame = np.array(pil_image)
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+    faces = face_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.3,
+        minNeighbors=5
+    )
+
+    if len(faces) == 0:
+        return {
+            "emotion": "No face",
+            "confidence": 0,
+            "box": None
+        }
+
+    x, y, w, h = faces[0]
+
+    face = gray[y:y+h, x:x+w]
+    face = cv2.resize(face, (48, 48))
+    face = face.astype("float32") / 255.0
+    face = np.expand_dims(face, axis=(0, -1))
+
+    predictions = model.predict(face, verbose=0)
     scores = predictions[0].tolist()
     best_index = int(np.argmax(scores))
+
     return {
         "emotion": emotions[best_index],
-        "confidence": scores[best_index],
+        "confidence": float(scores[best_index]),
         "scores": scores,
+        "box": {
+            "x": int(x),
+            "y": int(y),
+            "w": int(w),
+            "h": int(h)
+        }
     }
