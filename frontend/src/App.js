@@ -5,98 +5,107 @@ const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
 function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [emotion, setEmotion] = useState("Ready to detect");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const intervalRef = useRef(null);
   const streamRef = useRef(null);
+  const busyRef = useRef(false);
 
   useEffect(() => {
-    return () => {
-      stopCamera();
-    };
+    return () => stopCamera();
   }, []);
 
   const startCamera = async () => {
-    setError("");
-    setEmotion("Starting camera...");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+      audio: false,
+    });
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+    streamRef.current = stream;
+    videoRef.current.srcObject = stream;
+    await videoRef.current.play();
 
-      setIsRunning(true);
-      setEmotion("Detecting emotion...");
-      intervalRef.current = window.setInterval(captureFrame, 1200);
-    } catch (err) {
-      setError("Unable to open webcam. Please allow camera access.");
-      setEmotion("Camera unavailable");
-      setIsRunning(false);
-    }
+    setIsRunning(true);
+    setEmotion("Detecting...");
+
+    intervalRef.current = setInterval(captureFrame, 1000);
   };
 
   const stopCamera = () => {
-    if (intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
+    if (intervalRef.current) clearInterval(intervalRef.current);
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
     }
+
     setIsRunning(false);
     setLoading(false);
-    setEmotion("Camera is stopped");
+    setEmotion("Camera stopped");
   };
 
   const captureFrame = async () => {
-    if (!videoRef.current || !canvasRef.current) {
-      return;
-    }
+    if (busyRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const width = video.videoWidth || 640;
-    const height = video.videoHeight || 480;
-    canvas.width = width;
-    canvas.height = height;
 
-    const context = canvas.getContext("2d");
-    context.drawImage(video, 0, 0, width, height);
+    if (!video || !canvas || video.videoWidth === 0) return;
 
+    busyRef.current = true;
     setLoading(true);
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        setLoading(false);
-        return;
-      }
 
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(async (blob) => {
       const formData = new FormData();
       formData.append("image", blob, "frame.jpg");
 
       try {
-        const response = await fetch(`${API_URL}/predict`, {
+        const res = await fetch(`${API_URL}/predict`, {
           method: "POST",
           body: formData,
         });
 
-        if (!response.ok) {
-          throw new Error("Prediction request failed");
-        }
+        const data = await res.json();
 
-        const data = await response.json();
-        setEmotion(`${data.emotion} (${(data.confidence * 100).toFixed(1)}%)`);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        if (data.faces && data.faces.length > 0) {
+  data.faces.forEach((face) => {
+    const { x, y, w, h } = face.box;
+
+    ctx.strokeStyle = "blue";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = "lime";
+    ctx.font = "32px Arial";
+    ctx.fillText(face.emotion, x, y - 10);
+  });
+
+  const firstFace = data.faces[0];
+  setEmotion(
+    `${data.faces.length} face(s) detected - ${firstFace.emotion} (${(
+      firstFace.confidence * 100
+    ).toFixed(1)}%)`
+  );
+} else {
+  setEmotion("No face detected");
+}
       } catch (err) {
-        setError("Prediction failed. Check backend connection.");
-      } finally {
-        setLoading(false);
+        setEmotion("Backend error");
       }
-    }, "image/jpeg", 0.8);
+
+      busyRef.current = false;
+      setLoading(false);
+    }, "image/jpeg");
   };
 
   return (
@@ -106,7 +115,7 @@ function App() {
         background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)",
         minHeight: "100vh",
         color: "white",
-        fontFamily: "Arial, sans-serif",
+        fontFamily: "Arial",
         paddingBottom: "40px",
       }}
     >
@@ -114,86 +123,63 @@ function App() {
         Emotion Detection 🎭
       </h1>
 
-      <div style={{ maxWidth: "900px", margin: "auto", paddingTop: "20px" }}>
-        <div
+      <video ref={videoRef} style={{ display: "none" }} muted playsInline />
+
+      <div
+        style={{
+          maxWidth: "800px",
+          margin: "auto",
+          border: "6px solid #00ffcc",
+          borderRadius: "15px",
+          boxShadow: "0 0 20px #00ffcc",
+          background: "black",
+        }}
+      >
+        <canvas
+          ref={canvasRef}
           style={{
-            position: "relative",
-            border: "6px solid #00ffcc",
-            borderRadius: "15px",
-            boxShadow: "0px 0px 20px #00ffcc",
-            overflow: "hidden",
-            background: "#000",
+            width: "100%",
+            display: "block",
           }}
-        >
-          {isRunning ? (
-            <video
-              ref={videoRef}
-              style={{ width: "100%", height: "auto" }}
-              muted
-              autoPlay
-              playsInline
-            />
-          ) : (
-            <div
-              style={{
-                width: "100%",
-                minHeight: "500px",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                color: "#aaa",
-                fontSize: "20px",
-              }}
-            >
-              {error || "Camera is OFF"}
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginTop: "24px" }}>
-          <button
-            onClick={startCamera}
-            disabled={isRunning}
-            style={{
-              padding: "15px 40px",
-              fontSize: "18px",
-              marginRight: "20px",
-              borderRadius: "10px",
-              border: "none",
-              background: isRunning ? "#6b6b6b" : "#00c853",
-              color: "white",
-              cursor: isRunning ? "not-allowed" : "pointer",
-            }}
-          >
-            ▶ Start
-          </button>
-
-          <button
-            onClick={stopCamera}
-            disabled={!isRunning}
-            style={{
-              padding: "15px 40px",
-              fontSize: "18px",
-              borderRadius: "10px",
-              border: "none",
-              background: !isRunning ? "#6b6b6b" : "#d50000",
-              color: "white",
-              cursor: !isRunning ? "not-allowed" : "pointer",
-            }}
-          >
-            ⏹ Stop
-          </button>
-        </div>
-
-        <div style={{ marginTop: "24px", fontSize: "20px" }}>
-          <strong>Result:</strong> {loading ? "Detecting..." : emotion}
-        </div>
-        {error && (
-          <div style={{ marginTop: "12px", color: "#ff8a80" }}>{error}</div>
-        )}
+        />
       </div>
 
-      <canvas ref={canvasRef} style={{ display: "none" }} />
+      <div style={{ marginTop: "25px" }}>
+        <button
+          onClick={startCamera}
+          disabled={isRunning}
+          style={{
+            padding: "15px 40px",
+            marginRight: "20px",
+            background: "#00c853",
+            color: "white",
+            border: "none",
+            borderRadius: "10px",
+            fontSize: "18px",
+          }}
+        >
+          ▶ Start
+        </button>
+
+        <button
+          onClick={stopCamera}
+          disabled={!isRunning}
+          style={{
+            padding: "15px 40px",
+            background: "#d50000",
+            color: "white",
+            border: "none",
+            borderRadius: "10px",
+            fontSize: "18px",
+          }}
+        >
+          ■ Stop
+        </button>
+      </div>
+
+      <div style={{ marginTop: "25px", fontSize: "22px" }}>
+        <strong>Result:</strong> {loading ? "Detecting..." : emotion}
+      </div>
     </div>
   );
 }

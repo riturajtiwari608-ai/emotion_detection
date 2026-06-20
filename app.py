@@ -1,7 +1,4 @@
-﻿import os
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
+﻿
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from tensorflow.keras.models import load_model
@@ -9,6 +6,8 @@ from PIL import Image
 import numpy as np
 import io
 import cv2
+import os
+
 
 app = FastAPI()
 
@@ -52,30 +51,35 @@ async def predict(image: UploadFile = File(...)):
 
     if len(faces) == 0:
         return {
-            "emotion": "No face",
-            "confidence": 0,
-            "box": None
+            "faces": [],
+            "message": "No face detected"
         }
 
-    x, y, w, h = faces[0]
+    results = []
 
-    face = gray[y:y+h, x:x+w]
-    face = cv2.resize(face, (48, 48))
-    face = face.astype("float32") / 255.0
-    face = np.expand_dims(face, axis=(0, -1))
+    for (x, y, w, h) in faces:
+        face = gray[y:y+h, x:x+w]
+        face = cv2.resize(face, (48, 48))
+        face = face.astype("float32") / 255.0
+        face = np.expand_dims(face, axis=(0, -1))
 
-    predictions = model.predict(face, verbose=0)
-    scores = predictions[0].tolist()
-    best_index = int(np.argmax(scores))
+        predictions = model.predict(face, verbose=0)
+        scores = predictions[0].tolist()
+        best_index = int(np.argmax(scores))
+
+        results.append({
+            "emotion": emotions[best_index],
+            "confidence": float(scores[best_index]),
+            "scores": scores,
+            "box": {
+                "x": int(x),
+                "y": int(y),
+                "w": int(w),
+                "h": int(h)
+            }
+        })
 
     return {
-        "emotion": emotions[best_index],
-        "confidence": float(scores[best_index]),
-        "scores": scores,
-        "box": {
-            "x": int(x),
-            "y": int(y),
-            "w": int(w),
-            "h": int(h)
-        }
+        "faces": results,
+        "count": len(results)
     }
