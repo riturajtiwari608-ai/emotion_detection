@@ -12,6 +12,14 @@ function App() {
   const intervalRef = useRef(null);
   const streamRef = useRef(null);
   const busyRef = useRef(false);
+  const runningRef = useRef(false);
+
+  // Sending webcam-sized frames to a remote API is expensive. This resolution is
+  // sufficient for a 48x48 emotion model while making each upload much smaller.
+  const FRAME_WIDTH = 320;
+  const FRAME_HEIGHT = 240;
+  const JPEG_QUALITY = 0.7;
+  const NEXT_FRAME_DELAY_MS = 250;
 
   useEffect(() => {
     return () => stopCamera();
@@ -27,14 +35,16 @@ function App() {
     videoRef.current.srcObject = stream;
     await videoRef.current.play();
 
+    runningRef.current = true;
     setIsRunning(true);
     setEmotion("Detecting...");
-
-    intervalRef.current = setInterval(captureFrame, 1000);
+    captureFrame();
   };
 
   const stopCamera = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
+    runningRef.current = false;
+    if (intervalRef.current) clearTimeout(intervalRef.current);
+    intervalRef.current = null;
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -46,7 +56,7 @@ function App() {
   };
 
   const captureFrame = async () => {
-    if (busyRef.current) return;
+    if (!runningRef.current || busyRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -58,12 +68,17 @@ function App() {
 
     const ctx = canvas.getContext("2d");
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = FRAME_WIDTH;
+    canvas.height = FRAME_HEIGHT;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     canvas.toBlob(async (blob) => {
+      if (!blob || !runningRef.current) {
+        busyRef.current = false;
+        return;
+      }
+
       const formData = new FormData();
       formData.append("image", blob, "frame.jpg");
 
@@ -74,6 +89,8 @@ function App() {
         });
 
         const data = await res.json();
+
+        if (!runningRef.current) return;
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -100,12 +117,16 @@ function App() {
   setEmotion("No face detected");
 }
       } catch (err) {
-        setEmotion("Backend error");
+        if (runningRef.current) setEmotion("Backend error");
+      } finally {
+        busyRef.current = false;
+        if (runningRef.current) {
+          intervalRef.current = setTimeout(captureFrame, NEXT_FRAME_DELAY_MS);
+        } else {
+          setLoading(false);
+        }
       }
-
-      busyRef.current = false;
-      setLoading(false);
-    }, "image/jpeg");
+    }, "image/jpeg", JPEG_QUALITY);
   };
 
   return (
